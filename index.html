@@ -6,17 +6,17 @@
   <title>作業報告（LIFF）</title>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; margin:16px; line-height:1.45;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; margin:16px; line-height:1.4;}
     h1{font-size:18px;margin:0 0 12px;}
     .muted{color:#666; font-size:12px;}
     .small{font-size:12px;}
     .ok{color:#0a7a0a;}
     .ng{color:#b00020;}
     .pill{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #ddd; margin-left:6px;}
-    .card{border:1px solid #ddd; border-radius:12px; padding:12px; margin:10px 0; background:#fff;}
+    .card{border:1px solid #ddd; border-radius:12px; padding:12px; margin:10px 0;}
     label{display:block; font-size:12px; color:#555; margin:8px 0 4px;}
     input, select, textarea{width:100%; padding:10px; border:1px solid #ccc; border-radius:10px; font-size:14px; box-sizing:border-box;}
-    textarea{min-height:110px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;}
+    textarea{min-height:110px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
     .row{display:flex; gap:10px;}
     .row > div{flex:1;}
     .actions{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
@@ -25,13 +25,12 @@
     .btn.danger{background:#b00020; border-color:#b00020;}
     .btn:disabled{opacity:.5; cursor:not-allowed;}
     .hr{height:1px;background:#eee;margin:12px 0;}
-    pre{white-space:pre-wrap; word-break:break-word; background:#fafafa; border:1px solid #eee; padding:10px; border-radius:10px; margin:8px 0 0;}
-    .topline{display:flex; justify-content:space-between; align-items:center; gap:10px;}
+    pre{white-space:pre-wrap; word-break:break-word; background:#fafafa; border:1px solid #eee; padding:10px; border-radius:10px;}
   </style>
 </head>
 <body>
   <h1>作業報告（LIFF）</h1>
-  <div class="muted">日付・店舗は1回、作業×車種ごとにIDをまとめて送れます（IDは10桁）</div>
+  <div class="muted">日付・店舗は1回、作業×車種ごとにIDをまとめて送れます（10桁チェックあり）</div>
 
   <div class="card">
     <div class="row">
@@ -49,7 +48,7 @@
   </div>
 
   <div class="card">
-    <div class="topline">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
       <div>
         <b>作業グループ</b>
         <span class="pill small" id="groupCount">0</span>
@@ -66,452 +65,427 @@
       <button class="btn" id="submitBtn" type="button" disabled>送信</button>
       <button class="btn secondary" id="closeBtn" type="button">閉じる</button>
     </div>
-    <div class="muted small" style="margin-top:8px;">※ カンマ区切り / スペース混在OK（自動で改行扱いにします）</div>
+    <div class="muted small" style="margin-top:8px;">※ カンマ区切りやスペース混在もOK（自動整形します）</div>
     <pre class="muted small" id="result"></pre>
   </div>
 
 <script>
-/** ===================== 設定（必要ならここだけ変更） ===================== */
-const LIFF_ID          = "2008808765-L8j70RxD";
-const MAKE_WEBHOOK_URL = "https://hook.eu1.make.com/lyun7f40ey1ceh4yxhaio55gubjvpis8"; // 作業報告
-const MASTER_API_URL   = "https://hook.eu1.make.com/9qr1qm6jxujdb4sjnfj4elfmuapryb8v"; // マスタ返却
-const API_KEY = ""; // 使う場合のみ（Make側で一致チェック）。不要なら空のまま
-/** ======================================================================= */
+  // ===================== 設定（必要ならここだけ変更） =====================
+  const LIFF_ID          = "2008808765-L8j70RxD";
+  const MAKE_WEBHOOK_URL = "https://hook.eu1.make.com/lyun7f40ey1ceh4yxhaio55gubjvpis8";
+  const MASTER_API_URL   = "https://hook.eu1.make.com/9qr1qm6jxujdb4sjnfj4elfmuapryb8v";
+  const API_KEY = ""; // 使う場合のみ（Make側で一致チェック）
+  // ======================================================================
 
-const el = (id) => document.getElementById(id);
+  const el = (id) => document.getElementById(id);
 
-// master_apiが落ちたときのフォールバック（最低限）
-let STORES = [{ id: "TEST-01", name: "テスト店舗" }];
-let WORKS  = [{ code: "TESTWORK", name: "テスト作業", default_unit_price: 500 }];
+  // フォールバック（master_api が落ちたときの最低限）
+  let STORES = [{ id: "TEST-01", name: "テスト店舗" }];
+  let WORKS  = [{ code: "TESTWORK", name: "テスト作業", default_unit_price: 500 }];
 
-const state = {
-  lineUserId: null,
-  lineDisplayName: "",
-  groups: []
-};
+  const state = { lineUserId: null, groups: [] };
+  let isSubmitting = false;
 
-let isSubmitting = false;
+  function todayISO(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
 
-function escapeHtml(s){
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-function escapeHtmlAttr(s){ return escapeHtml(s); }
+  function uuid(){
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
+      const r = Math.random()*16|0, v = c==='x'?r:(r&0x3|0x8);
+      return v.toString(16);
+    });
+  }
 
-function todayISO(){
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const dd = String(d.getDate()).padStart(2,"0");
-  return `${yyyy}-${mm}-${dd}`;
-}
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+  function escapeHtmlAttr(s){ return escapeHtml(s); }
 
-function uuid(){
-  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
-    const r = Math.random()*16|0, v = c==='x'?r:(r&0x3|0x8);
-    return v.toString(16);
-  });
-}
+  function getStoreName(store_id){
+    const hit = (STORES || []).find(x => x.id === store_id);
+    return hit ? hit.name : "";
+  }
+  function getWorkName(work_code){
+    const hit = (WORKS || []).find(x => x.code === work_code);
+    return hit ? hit.name : "";
+  }
 
-// JSTの提出時刻（表示ズレ対策用にpayloadに入れる）
-// ※最終的な確定はMake側で formatDate(now; ... "Asia/Tokyo") を推奨
-function nowJSTString(){
-  const f = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false
-  });
-  const parts = f.formatToParts(new Date());
-  const m = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  // ja-JP は 2026/01/02 形式になるので、自前で整形
-  return `${m.year}-${m.month}-${m.day} ${m.hour}:${m.minute}:${m.second}`;
-}
+  function initStoreSelect(){
+    const storeSel = el("storeSelect");
+    const prev = storeSel.value;
+    storeSel.innerHTML = (STORES || []).map(s =>
+      `<option value="${escapeHtmlAttr(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
+    ).join("");
+    if (prev && (STORES || []).some(s=>s.id===prev)) storeSel.value = prev;
+  }
 
-function getStoreName(store_id){
-  const hit = (STORES || []).find(x => x.id === store_id);
-  return hit ? hit.name : "";
-}
-function getWorkName(work_code){
-  const hit = (WORKS || []).find(x => x.code === work_code);
-  return hit ? hit.name : "";
-}
+  function workOptionsHTML(selected){
+    return (WORKS || []).map(w =>
+      `<option value="${escapeHtmlAttr(w.code)}" ${w.code===selected?"selected":""}>${escapeHtml(w.name)} (${escapeHtml(w.code)})</option>`
+    ).join("");
+  }
 
-function initStoreSelect(){
-  const storeSel = el("storeSelect");
-  const prev = storeSel.value;
-  storeSel.innerHTML = (STORES || []).map(s =>
-    `<option value="${escapeHtmlAttr(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
-  ).join("");
-  if (prev && (STORES || []).some(s=>s.id===prev)) storeSel.value = prev;
-}
+  // -------- IDパース（現場コピペ耐性：カンマ/空白/全角/混在OK） --------
+  function parseIdsPerLine(line, lineNo){
+    const raw = (line ?? "").trim();
+    if (!raw) return { ids: [], invalid: [] };
 
-function workOptionsHTML(selected){
-  return (WORKS || []).map(w =>
-    `<option value="${escapeHtmlAttr(w.code)}" ${w.code===selected?"selected":""}>${escapeHtml(w.name)} (${escapeHtml(w.code)})</option>`
-  ).join("");
-}
+    const parts = raw.match(/\d+/g) || [];
+    const digits = parts.join("");
 
-/** -------------------- IDパース（現場コピペ耐性） -------------------- */
-// 1行に 10桁×N が連結していても許容（111...222...）
-function parseIdsPerLine(line, lineNo){
-  const raw = (line ?? "").trim();
-  if (!raw) return { ids: [], invalid: [] };
+    if (!digits) return { ids: [], invalid: [{ lineNo, value: raw }] };
 
-  const parts = raw.match(/\d+/g) || [];
-  const digits = parts.join("");
+    if (digits.length === 10) return { ids: [digits], invalid: [] };
 
-  if (!digits) return { ids: [], invalid: [{ lineNo, value: raw }] };
+    if (digits.length % 10 === 0) {
+      const ids = [];
+      for (let i=0; i<digits.length; i+=10) ids.push(digits.slice(i, i+10));
+      const ok = ids.every(x => /^\d{10}$/.test(x));
+      if (ok) return { ids, invalid: [] };
+    }
+    return { ids: [], invalid: [{ lineNo, value: raw }] };
+  }
 
-  if (digits.length === 10) return { ids: [digits], invalid: [] };
+  function parseIds(text){
+    const t = String(text ?? "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[、,;]/g, "\n");
 
-  if (digits.length % 10 === 0) {
+    const lines = t.split(/\n/);
     const ids = [];
-    for (let i=0; i<digits.length; i+=10) ids.push(digits.slice(i, i+10));
-    const ok = ids.every(x => /^\d{10}$/.test(x));
-    if (ok) return { ids, invalid: [] };
-  }
-  return { ids: [], invalid: [{ lineNo, value: raw }] };
-}
+    const invalid = [];
 
-function normalizeIdInput(text){
-  return String(text ?? "")
-    .replace(/\r\n/g, "\n")
-    .replace(/[、,;]/g, "\n");
-}
-
-function parseIds(text){
-  const t = normalizeIdInput(text);
-  const lines = t.split(/\n/);
-  const ids = [];
-  const invalid = [];
-
-  for (let i=0; i<lines.length; i++){
-    const { ids: got, invalid: bad } = parseIdsPerLine(lines[i], i+1);
-    got.forEach(x => ids.push(x));
-    bad.forEach(x => invalid.push(x));
-  }
-
-  const finalIds = ids.filter(x => /^\d{10}$/.test(x));
-  const finalInvalid = invalid.slice();
-
-  if (finalIds.length === 0 && String(text ?? "").trim() !== "" && finalInvalid.length === 0){
-    finalInvalid.push({ lineNo: 0, value: "IDを認識できませんでした" });
-  }
-
-  return { ids: finalIds, invalid: finalInvalid };
-}
-
-/** -------------------- master_api 正規化（0/1/2形式対応） -------------------- */
-function pick(obj, keys){
-  for (const k of keys) {
-    if (obj && obj[k] != null && obj[k] !== "") return obj[k];
-  }
-  return null;
-}
-
-function normalizeStores(raw){
-  if (!Array.isArray(raw)) return null;
-  return raw
-    .map(r => {
-      if (!r) return null;
-      // { "0": "...", "1": "..." } or {id,name} も許容
-      const id = pick(r, ["id","A","0",0]);
-      const name = pick(r, ["name","B","1",1]);
-      return (id && name) ? ({ id: String(id), name: String(name) }) : null;
-    })
-    .filter(Boolean);
-}
-
-function normalizeWorks(raw){
-  if (!Array.isArray(raw)) return null;
-  return raw
-    .map(r => {
-      if (!r) return null;
-      const code = pick(r, ["code","A","0",0]);
-      const name = pick(r, ["name","B","1",1]);
-      const price = pick(r, ["default_unit_price","C","2",2]);
-      if (!code || !name) return null;
-      return {
-        code: String(code),
-        name: String(name),
-        default_unit_price: (price === "" || price == null) ? null : Number(price)
-      };
-    })
-    .filter(Boolean);
-}
-
-async function loadMasters(){
-  el("masterInfo").textContent = "マスタ読み込み中…";
-  try{
-    const headers = {};
-    if (API_KEY) headers["X-API-KEY"] = API_KEY;
-
-    const res = await fetch(MASTER_API_URL, { method: "GET", headers });
-    if(!res.ok) throw new Error(`master api http ${res.status}`);
-    const data = await res.json();
-
-    const stores = normalizeStores(data.stores);
-    const works  = normalizeWorks(data.works);
-
-    if (stores && stores.length) STORES = stores;
-    if (works  && works.length)  WORKS  = works;
-
-    el("masterInfo").innerHTML = `<span class="ok">OK</span> マスタ取得: 店舗 ${STORES.length}件 / 作業 ${WORKS.length}件`;
-    return true;
-  } catch(e){
-    console.warn("loadMasters failed:", e);
-    el("masterInfo").innerHTML = `<span class="ng">NG</span> マスタ取得に失敗（フォールバックで動作）`;
-    return false;
-  }
-}
-
-/** -------------------- UI：グループ -------------------- */
-function renderGroup(group){
-  const wrapper = document.createElement("div");
-  wrapper.className = "card";
-  wrapper.dataset.groupId = group.localId;
-
-  wrapper.innerHTML = `
-    <div class="row">
-      <div>
-        <label>作業（work_code）</label>
-        <select class="workSelect">${workOptionsHTML(group.work_code)}</select>
-      </div>
-      <div>
-        <label>車種（そのまま保存）</label>
-        <input class="carType" placeholder="例：プリウス" value="${escapeHtmlAttr(group.car_type_text || "")}">
-      </div>
-    </div>
-
-    <label>ID一覧（1行=1ID / 10桁）</label>
-    <textarea class="idText" placeholder="0123456789&#10;0000000001"></textarea>
-
-    <div class="muted small status"></div>
-
-    <div class="actions">
-      <button class="btn danger removeBtn" type="button">このグループを削除</button>
-    </div>
-  `;
-
-  const workSel = wrapper.querySelector(".workSelect");
-  const carType = wrapper.querySelector(".carType");
-  const idText  = wrapper.querySelector(".idText");
-
-  idText.value = group.id_text || "";
-
-  workSel.addEventListener("change", (e)=>{
-    group.work_code = e.target.value;
-    updateAll();
-  });
-
-  carType.addEventListener("input", (e)=>{
-    group.car_type_text = e.target.value;
-    updateAll();
-  });
-
-  idText.addEventListener("input", (e)=>{
-    const v = normalizeIdInput(e.target.value);
-    group.id_text = v;
-    if (v !== e.target.value) e.target.value = v;
-    updateAll();
-  });
-
-  wrapper.querySelector(".removeBtn").addEventListener("click", ()=>{
-    state.groups = state.groups.filter(g => g.localId !== group.localId);
-    updateUI();
-  });
-
-  return wrapper;
-}
-
-function updateUI(){
-  const groupsEl = el("groups");
-  groupsEl.innerHTML = "";
-  state.groups.forEach(g => groupsEl.appendChild(renderGroup(g)));
-  el("groupCount").textContent = String(state.groups.length);
-  updateAll();
-}
-
-function addGroup(){
-  const defaultWork = (WORKS[0]?.code) || "";
-  state.groups.push({
-    localId: uuid(),
-    work_code: defaultWork,
-    car_type_text: "",
-    id_text: ""
-  });
-  updateUI();
-}
-
-function updateAll(){
-  let totalQty = 0;
-  let totalInvalid = 0;
-  let allOk = true;
-
-  document.querySelectorAll("#groups .card").forEach(card=>{
-    const gid = card.dataset.groupId;
-    const g = state.groups.find(x => x.localId === gid);
-    const statusEl = card.querySelector(".status");
-
-    const workOk = !!(g.work_code || "").trim();
-    const carOk  = ((g.car_type_text || "").trim().length > 0);
-
-    const { ids, invalid } = parseIds(g.id_text || "");
-    totalQty += ids.length;
-    totalInvalid += invalid.length;
-
-    const ok = workOk && carOk && ids.length > 0 && invalid.length === 0;
-    if(!ok) allOk = false;
-
-    const msg = [];
-    msg.push(`ID有効: ${ids.length}件`);
-    if(!carOk) msg.push("車種未入力");
-    if(ids.length===0) msg.push("ID未入力");
-
-    if(invalid.length>0){
-      const list = invalid.slice(0,5).map(x => `行${x.lineNo}=${x.value}`).join(", ");
-      msg.push(`不正: ${invalid.length}件（${list}${invalid.length>5?"…":""}）`);
+    for (let i=0; i<lines.length; i++){
+      const { ids: got, invalid: bad } = parseIdsPerLine(lines[i], i+1);
+      got.forEach(x => ids.push(x));
+      bad.forEach(x => invalid.push(x));
     }
 
-    statusEl.innerHTML = ok
-      ? `<span class="ok">OK</span> ${msg.join(" / ")}`
-      : `<span class="ng">NG</span> ${msg.join(" / ")}`;
-  });
+    const finalIds = ids.filter(x => /^\d{10}$/.test(x));
+    const finalInvalid = invalid.slice();
 
-  el("summary").textContent = `グループ数: ${state.groups.length} / 合計ID: ${totalQty} / 不正行: ${totalInvalid}`;
-  el("submitBtn").disabled = !(state.groups.length>0 && allOk && !isSubmitting);
-}
+    if (finalIds.length === 0 && String(text ?? "").trim() !== "" && finalInvalid.length === 0){
+      finalInvalid.push({ lineNo: 0, value: "IDを認識できませんでした" });
+    }
 
-/** -------------------- 送信 -------------------- */
-function buildPayload(){
-  const work_date = el("workDate").value;
-  const store_id  = el("storeSelect").value;
+    return { ids: finalIds, invalid: finalInvalid };
+  }
 
-  const groups = state.groups.map(g=>{
-    const { ids } = parseIds(g.id_text || "");
-    return {
-      work_code: g.work_code,
-      work_name_sna: getWorkName(g.work_code),
-      car_type_text: (g.car_type_text || "").trim(),
-      ids,
-      qty: ids.length,
-      id_list_raw: ids.join("\n")
-    };
-  });
+  // -------- master_api 正規化（0/1/2 形式にも対応） --------
+  function pick(obj, keys){
+    for (const k of keys) {
+      if (obj && obj[k] != null && obj[k] !== "") return obj[k];
+    }
+    return null;
+  }
 
-  return {
-    work_date,
-    store_id,
-    store_name_sna: getStoreName(store_id),
+  function normalizeStores(raw){
+    if (!Array.isArray(raw)) return null;
+    if (raw.length === 0) return [];
+    if (Array.isArray(raw[0])) {
+      return raw
+        .filter(r => r && r[0] != null && r[1] != null)
+        .map(r => ({ id: String(r[0]), name: String(r[1]) }));
+    }
+    if (typeof raw[0] === "object" && raw[0] !== null) {
+      return raw
+        .map(r => {
+          const id = pick(r, ["id","A","0",0]);
+          const name = pick(r, ["name","B","1",1]);
+          return (id && name) ? ({ id: String(id), name: String(name) }) : null;
+        })
+        .filter(Boolean);
+    }
+    return null;
+  }
 
-    // 作業員を識別するための情報
-    reporter_line_user_id: state.lineUserId || "UNKNOWN",
-    reporter_line_display_name: state.lineDisplayName || "",
+  function normalizeWorks(raw){
+    if (!Array.isArray(raw)) return null;
+    if (raw.length === 0) return [];
+    if (Array.isArray(raw[0])) {
+      return raw
+        .filter(r => r && r[0] != null && r[1] != null)
+        .map(r => ({
+          code: String(r[0]),
+          name: String(r[1]),
+          default_unit_price: (r[2] === "" || r[2] == null) ? null : Number(r[2])
+        }));
+    }
+    if (typeof raw[0] === "object" && raw[0] !== null) {
+      return raw
+        .map(r => {
+          const code = pick(r, ["code","A","0",0]);
+          const name = pick(r, ["name","B","1",1]);
+          const price = pick(r, ["default_unit_price","C","2",2]);
+          if (!code || !name) return null;
+          return {
+            code: String(code),
+            name: String(name),
+            default_unit_price: (price === "" || price == null) ? null : Number(price)
+          };
+        })
+        .filter(Boolean);
+    }
+    return null;
+  }
 
-    // クライアント側JST（Make側でもJST生成を推奨）
-    submitted_at_jst: nowJSTString(),
+  async function loadMasters(){
+    el("masterInfo").textContent = "マスタ読み込み中…";
+    try{
+      const headers = {};
+      if (API_KEY) headers["X-API-KEY"] = API_KEY;
 
-    groups
-  };
-}
+      const res = await fetch(MASTER_API_URL, { method: "GET", headers });
+      if(!res.ok) throw new Error(`master api http ${res.status}`);
+      const data = await res.json();
 
-async function submit(){
-  if (isSubmitting) return;
-  isSubmitting = true;
+      const stores = normalizeStores(data.stores);
+      const works  = normalizeWorks(data.works);
 
-  el("submitBtn").disabled = true;
-  el("result").textContent = "送信中…";
+      if (stores && stores.length) STORES = stores;
+      if (works  && works.length)  WORKS  = works;
 
-  try{
-    const payload = buildPayload();
+      el("masterInfo").innerHTML = `<span class="ok">OK</span> マスタ取得: 店舗 ${STORES.length}件 / 作業 ${WORKS.length}件`;
+      return true;
+    } catch(e){
+      console.warn("loadMasters failed:", e);
+      el("masterInfo").innerHTML = `<span class="ng">NG</span> マスタ取得に失敗（フォールバックで動作）`;
+      return false;
+    }
+  }
 
-    const headers = { "Content-Type": "application/json; charset=utf-8" };
-    if (API_KEY) headers["X-API-KEY"] = API_KEY;
+  // -------- UI --------
+  function renderGroup(group){
+    const wrapper = document.createElement("div");
+    wrapper.className = "card";
+    wrapper.dataset.groupId = group.localId;
 
-    const res = await fetch(MAKE_WEBHOOK_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
+    wrapper.innerHTML = `
+      <div class="row">
+        <div>
+          <label>作業（work_code）</label>
+          <select class="workSelect">${workOptionsHTML(group.work_code)}</select>
+        </div>
+        <div>
+          <label>車種（そのまま保存）</label>
+          <input class="carType" placeholder="例：プリウス" value="${escapeHtmlAttr(group.car_type_text || "")}">
+        </div>
+      </div>
+
+      <label>ID一覧（1行=1ID / 10桁）</label>
+      <textarea class="idText" placeholder="0123456789&#10;0000000001"></textarea>
+
+      <div class="muted small status"></div>
+
+      <div class="actions">
+        <button class="btn danger removeBtn" type="button">このグループを削除</button>
+      </div>
+    `;
+
+    const idText = wrapper.querySelector(".idText");
+    idText.value = group.id_text || "";
+
+    wrapper.querySelector(".workSelect").addEventListener("change", (e)=>{
+      group.work_code = e.target.value;
+      updateAll();
     });
 
-    const text = await res.text();
+    wrapper.querySelector(".carType").addEventListener("input", (e)=>{
+      group.car_type_text = e.target.value;
+      updateAll();
+    });
 
-    if(res.ok){
-      el("result").textContent = "✅ 送信完了";
+    idText.addEventListener("input", (e)=>{
+      const v = String(e.target.value ?? "")
+        .replace(/\r\n/g, "\n")
+        .replace(/[、,;]/g, "\n");
+      group.id_text = v;
+      if (v !== e.target.value) e.target.value = v;
+      updateAll();
+    });
 
-      // 成功時：グループだけクリア（店舗/日付は残す）
-      state.groups = [];
-      addGroup();
+    wrapper.querySelector(".removeBtn").addEventListener("click", ()=>{
+      state.groups = state.groups.filter(g => g.localId !== group.localId);
+      updateUI();
+    });
 
-      // 任意：LINEトークに通知（LIFF内でのみ）
-      if (window.liff && liff.isInClient()){
-        try{
-          await liff.sendMessages([{
-            type: "text",
-            text: `✅ 作業報告送信完了\n日付:${payload.work_date}\n店舗:${payload.store_id}\nグループ:${payload.groups.length}`
-          }]);
-        } catch(_){}
-      }
-    } else {
-      el("result").textContent = `❌ 送信失敗 HTTP ${res.status}\n${text}`;
-    }
-  } catch(e){
-    el("result").textContent = `❌ 送信失敗: ${e.message || e}`;
-  } finally {
-    isSubmitting = false;
+    return wrapper;
+  }
+
+  function updateUI(){
+    const groupsEl = el("groups");
+    groupsEl.innerHTML = "";
+    state.groups.forEach(g => groupsEl.appendChild(renderGroup(g)));
+    el("groupCount").textContent = String(state.groups.length);
     updateAll();
   }
-}
 
-/** -------------------- 初期化 -------------------- */
-async function init(){
-  el("result").textContent = "";
-
-  await loadMasters();
-  initStoreSelect();
-
-  el("workDate").value = todayISO();
-  addGroup();
-
-  // LIFF初期化（直ブラウザでも動くようにtry-catch）
-  try{
-    await liff.init({ liffId: LIFF_ID });
-
-    if(!liff.isLoggedIn()){
-      liff.login();
-      return;
-    }
-
-    const profile = await liff.getProfile();
-    state.lineUserId = profile.userId;
-    state.lineDisplayName = profile.displayName || "";
-
-    el("userInfo").textContent =
-      `LINE userId: ${profile.userId}` + (state.lineDisplayName ? ` / name: ${state.lineDisplayName}` : "");
-  } catch(e){
-    el("userInfo").textContent = `LIFF未初期化（ブラウザ直開きの可能性）: ${e.message || e}`;
+  function addGroup(){
+    const defaultWork = (WORKS[0]?.code) || "";
+    state.groups.push({
+      localId: uuid(),
+      work_code: defaultWork,
+      car_type_text: "",
+      id_text: ""
+    });
+    updateUI();
   }
 
-  el("addGroupBtn").addEventListener("click", addGroup);
-  el("submitBtn").addEventListener("click", submit);
-  el("closeBtn").addEventListener("click", ()=>{
-    if (window.liff && liff.isInClient()) liff.closeWindow();
-    else window.close();
-  });
+  function updateAll(){
+    let totalQty = 0;
+    let totalInvalid = 0;
+    let allOk = true;
 
-  el("storeSelect").addEventListener("change", updateAll);
+    document.querySelectorAll("#groups .card").forEach(card=>{
+      const gid = card.dataset.groupId;
+      const g = state.groups.find(x => x.localId === gid);
+      const statusEl = card.querySelector(".status");
 
-  updateAll();
-}
+      const workOk = !!(g.work_code || "").trim();
+      const carOk  = ((g.car_type_text || "").trim().length > 0);
 
-init();
+      const { ids, invalid } = parseIds(g.id_text || "");
+      totalQty += ids.length;
+      totalInvalid += invalid.length;
+
+      const ok = workOk && carOk && ids.length > 0 && invalid.length === 0;
+      if(!ok) allOk = false;
+
+      const msg = [];
+      msg.push(`ID有効: ${ids.length}件`);
+      if(!carOk) msg.push("車種未入力");
+      if(ids.length===0) msg.push("ID未入力");
+
+      if(invalid.length>0){
+        const list = invalid.slice(0,5).map(x => `行${x.lineNo}=${x.value}`).join(", ");
+        msg.push(`不正: ${invalid.length}件（${list}${invalid.length>5?"…":""}）`);
+      }
+
+      statusEl.innerHTML = ok
+        ? `<span class="ok">OK</span> ${msg.join(" / ")}`
+        : `<span class="ng">NG</span> ${msg.join(" / ")}`;
+    });
+
+    el("summary").textContent = `グループ数: ${state.groups.length} / 合計ID: ${totalQty} / 不正行: ${totalInvalid}`;
+    el("submitBtn").disabled = !(state.groups.length>0 && allOk && !isSubmitting);
+  }
+
+  function buildPayload(){
+    const work_date = el("workDate").value;
+    const store_id  = el("storeSelect").value;
+
+    const payload = {
+      work_date,
+      store_id,
+      store_name_sna: getStoreName(store_id),
+      reporter_line_user_id: state.lineUserId || "UNKNOWN",
+      groups: state.groups.map(g=>{
+        const { ids } = parseIds(g.id_text || "");
+        return {
+          work_code: g.work_code,
+          work_name_sna: getWorkName(g.work_code),
+          car_type_text: (g.car_type_text || "").trim(),
+          ids
+        };
+      })
+    };
+
+    return payload;
+  }
+
+  async function submit(){
+    if (isSubmitting) return;
+    isSubmitting = true;
+
+    el("submitBtn").disabled = true;
+    el("result").textContent = "送信中…";
+
+    try{
+      const payload = buildPayload();
+
+      const headers = { "Content-Type": "application/json; charset=utf-8" };
+      if (API_KEY) headers["X-API-KEY"] = API_KEY;
+
+      const res = await fetch(MAKE_WEBHOOK_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      const text = await res.text();
+
+      if(res.ok){
+        el("result").textContent = "✅ 送信完了";
+        state.groups = [];
+        addGroup();
+
+        if (window.liff && liff.isInClient()){
+          try{
+            await liff.sendMessages([{
+              type: "text",
+              text: `✅ 作業報告送信完了\n日付:${payload.work_date}\n店舗:${payload.store_id}\nグループ:${payload.groups.length}`
+            }]);
+          } catch(_){}
+        }
+      } else {
+        el("result").textContent = `❌ 送信失敗 HTTP ${res.status}\n${text}`;
+      }
+    } catch(e){
+      el("result").textContent = `❌ 送信失敗: ${e.message || e}`;
+    } finally {
+      isSubmitting = false;
+      updateAll();
+    }
+  }
+
+  async function init(){
+    el("result").textContent = "";
+
+    await loadMasters();
+    initStoreSelect();
+
+    el("workDate").value = todayISO();
+    addGroup();
+
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if(!liff.isLoggedIn()){
+        liff.login();
+        return;
+      }
+      const profile = await liff.getProfile();
+      state.lineUserId = profile.userId;
+      el("userInfo").textContent = `LINE userId: ${profile.userId}`;
+    } catch(e){
+      el("userInfo").textContent = `LIFF未初期化（ブラウザ直開きの可能性）: ${e.message || e}`;
+    }
+
+    el("addGroupBtn").addEventListener("click", addGroup);
+    el("submitBtn").addEventListener("click", submit);
+    el("closeBtn").addEventListener("click", ()=>{
+      if (window.liff && liff.isInClient()) liff.closeWindow();
+      else window.close();
+    });
+
+    el("storeSelect").addEventListener("change", updateAll);
+
+    updateAll();
+  }
+
+  init();
 </script>
 </body>
 </html>
+
 
