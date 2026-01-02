@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>作業報告（LIFF）</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; margin:16px; line-height:1.4;}
+    h1{font-size:18px;margin:0 0 12px;}
+    .muted{color:#666; font-size:12px;}
+    .small{font-size:12px;}
+    .ok{color:#0a7a0a;}
+    .ng{color:#b00020;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #ddd; margin-left:6px;}
+    .card{border:1px solid #ddd; border-radius:12px; padding:12px; margin:10px 0;}
+    label{display:block; font-size:12px; color:#555; margin:8px 0 4px;}
+    input, select, textarea{width:100%; padding:10px; border:1px solid #ccc; border-radius:10px; font-size:14px; box-sizing:border-box;}
+    textarea{min-height:110px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    .row{display:flex; gap:10px;}
+    .row > div{flex:1;}
+    .actions{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
+    .btn{padding:10px 12px; border-radius:10px; border:1px solid #333; background:#111; color:#fff; cursor:pointer;}
+    .btn.secondary{background:#fff; color:#111; border-color:#aaa;}
+    .btn.danger{background:#b00020; border-color:#b00020;}
+    .btn:disabled{opacity:.5; cursor:not-allowed;}
+    .hr{height:1px;background:#eee;margin:12px 0;}
+    pre{white-space:pre-wrap; word-break:break-word; background:#fafafa; border:1px solid #eee; padding:10px; border-radius:10px;}
+  </style>
+</head>
+<body>
+  <h1>作業報告（LIFF）</h1>
+  <div class="muted">日付・店舗は1回、作業×車種ごとにIDをまとめて送れます（10桁チェックあり）</div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>作業日</label>
+        <input type="date" id="workDate">
+      </div>
+      <div>
+        <label>店舗</label>
+        <select id="storeSelect"></select>
+      </div>
+    </div>
+    <div class="muted small" id="masterInfo"></div>
+    <div class="muted small" id="userInfo"></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <b>作業グループ</b>
+        <span class="pill small" id="groupCount">0</span>
+      </div>
+      <button class="btn secondary" id="addGroupBtn" type="button">＋グループ追加</button>
+    </div>
+    <div class="hr"></div>
+    <div id="groups"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted" id="summary"></div>
+    <div class="actions">
+      <button class="btn" id="submitBtn" type="button" disabled>送信</button>
+      <button class="btn secondary" id="closeBtn" type="button">閉じる</button>
+    </div>
+    <div class="muted small" style="margin-top:8px;">※ カンマ区切りやスペース混在もOK（自動整形します）</div>
+    <pre class="muted small" id="result"></pre>
+  </div>
+
+<script>
+  // ===================== 設定（ここだけ差し替え） =====================
+  const LIFF_ID          = "2008808765-L8j70RxD";
+  const MAKE_WEBHOOK_URL = "https://hook.eu1.make.com/lyun7f40ey1ceh4yxhaio55gubjvpis8";      // 作業報告のWebhook
+  const MASTER_API_URL   = "https://hook.eu1.make.com/9qr1qm6jxujdb4sjnfj4elfmuapryb8v";        // stores/works を返す master_api のWebhook
+
+  // 任意：Webhook保護をしている場合だけ設定（Make側で一致チェックする）
+  // 使わないなら空文字のままでOK
+  const API_KEY = ""; // 例: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  // master_api が落ちたときのフォールバック（最低1件は入れておくと無難）
+  let STORES = [{ id: "TEST-01", name: "テスト店舗" }];
+  let WORKS  = [{ code: "TESTWORK", name: "テスト作業", default_unit_price: 500 }];
+  // ===================================================================
+
+  const el = (id) => document.getElementById(id);
+
+  function todayISO(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function uuid(){
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
+      const r = Math.random()*16|0, v = c==='x'?r:(r&0x3|0x8);
+      return v.toString(16);
+    });
+  }
+
+  function getStoreName(store_id){
+    const s = STORES.find(x => x.id encouraged===false && x.id === store_id) || STORES.find(x=>x.id===store_id);
+    return s ? s.name : "";
+  }
+  function getWorkName(work_code){
+    const w = WORKS.find(x => x.code === work_code);
+    return w ? w.name : "";
+  }
+
+  function initStoreSelect(){
+    const storeSel = el("storeSelect");
+    const prev = storeSel.value;
+
+    storeSel.innerHTML = (STORES || []).map(s =>
+      `<option value="${escapeHtmlAttr(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
+    ).join("");
+
+    // 以前の選択を可能なら維持
+    if (prev && (STORES || []).some(s=>s.id===prev)) storeSel.value = prev;
+  }
+
+  function workOptionsHTML(selected){
+    return (WORKS || []).map(w =>
+      `<option value="${escapeHtmlAttr(w.code)}" ${w.code===selected?"selected":""}>${escapeHtml(w.name)} (${escapeHtml(w.code)})</option>`
+    ).join("");
+  }
+
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+  function escapeHtmlAttr(s){ return escapeHtml(s); }
+
+  // --- IDパース（運用向け）
+  // 1行に複数IDが混ざってもOK（連結して 10桁単位に分割）
+  // スペース/全角スペース/ハイフン等が混ざっても、数字だけ拾って判断
+  function parseIdsPerLine(line, lineNo){
+    const raw = (line ?? "").trim();
+    if (!raw) return { ids: [], invalid: [] };
+
+    // 行内の数字列をすべて連結（例: "0123 456789" → "0123456789"）
+    const parts = raw.match(/\d+/g) || [];
+    const digits = parts.join("");
+
+    // 数字が一つも無い
+    if (!digits) return { ids: [], invalid: [{ lineNo, value: raw }] };
+
+    // 10桁ぴったりなら1件
+    if (digits.length === 10) return { ids: [digits], invalid: [] };
+
+    // 20,30,... のように 10の倍数なら 10桁ずつに分割して許容（例: "111...222..."）
+    if (digits.length % 10 === 0) {
+      const ids = [];
+      for (let i=0; i<digits.length; i+=10) ids.push(digits.slice(i, i+10));
+      // 分割した各IDが10桁数字か最終チェック
+      const ok = ids.every(x => /^\d{10}$/.test(x));
+      if (ok) return { ids, invalid: [] };
+    }
+
+    // それ以外は不正として扱う（落とさずに修正してもらう）
+    return { ids: [], invalid: [{ lineNo, value: raw }] };
+  }
+
+  function parseIds(text){
+    const t = String(text ?? "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[、,;]/g, "\n"); // カンマ系は改行扱い
+
+    const lines = t.split(/\n/);
+    const ids = [];
+    const invalid = [];
+
+    for (let i=0; i<lines.length; i++){
+      const { ids: got, invalid: bad } = parseIdsPerLine(lines[i], i+1);
+      got.forEach(x => ids.push(x));
+      bad.forEach(x => invalid.push(x));
+    }
+
+    // 10桁以外が混ざっていない最終チェック
+    const finalInvalid = invalid.slice();
+    const finalIds = ids.filter(x => /^\d{10}$/.test(x));
+
+    // idsが0なのに、入力があって invalidも空になってしまうケースを防ぐ
+    if (finalIds.length === 0 && String(text ?? "").trim() !== "" && finalInvalid.length === 0){
+      finalInvalid.push({ lineNo: 0, value: "IDを認識できませんでした" });
+    }
+
+    return { ids: finalIds, invalid: finalInvalid };
+  }
+
+  // マスタ読み込み（A/B/C形式 or 2次元配列の両対応）
+  function normalizeStores(raw){
+    if (!Array.isArray(raw)) return null;
+    if (raw.length === 0) return [];
+    if (Array.isArray(raw[0])) {
+      return raw
+        .filter(r => r && r[0] != null && r[1] != null)
+        .map(r => ({ id: String(r[0]), name: String(r[1]) }));
+    }
+    if (typeof raw[0] === "object" && raw[0] !== null) {
+      return raw
+        .filter(r => (r.A ?? r.id) && (r.B ?? r.name))
+        .map(r => ({ id: String(r.id ?? r.A), name: String(r.name ?? r.B) }));
+    }
+    return null;
+  }
+  function normalizeWorks(raw){
+    if (!Array.isArray(raw)) return null;
+    if (raw.length === 0) return [];
+    if (Array.isArray(raw[0])) {
+      return raw
+        .filter(r => r && r[0] != null && r[1] != null)
+        .map(r => ({
+          code: String(r[0]),
+          name: String(r[1]),
+          default_unit_price: (r[2] === "" || r[2] == null) ? null : Number(r[2])
+        }));
+    }
+    if (typeof raw[0] === "object" && raw[0] !== null) {
+      return raw
+        .filter(r => (r.A ?? r.code) && (r.B ?? r.name))
+        .map(r => ({
+          code: String(r.code ?? r.A),
+          name: String(r.name ?? r.B),
+          default_unit_price: (r.default_unit_price ?? r.C) === "" || (r.default_unit_price ?? r.C) == null
+            ? null
+            : Number(r.default_unit_price ?? r.C)
+        }));
+    }
+    return null;
+  }
+
+  async function loadMasters(){
+    el("masterInfo").textContent = "マスタ読み込み中…";
+    try{
+      const headers = {};
+      if (API_KEY) headers["X-API-KEY"] = API_KEY;
+
+      const res = await fetch(MASTER_API_URL, { method: "GET", headers });
+      if(!res.ok) throw new Error(`master api http ${res.status}`);
+      const data = await res.json();
+
+      const stores = normalizeStores(data.stores);
+      const works  = normalizeWorks(data.works);
+
+      if (stores && stores.length) STORES = stores;
+      if (works  && works.length)  WORKS  = works;
+
+      el("masterInfo").innerHTML = `<span class="ok">OK</span> マスタ取得: 店舗 ${STORES.length}件 / 作業 ${WORKS.length}件`;
+      return true;
+    } catch(e){
+      console.warn("loadMasters failed:", e);
+      el("masterInfo").innerHTML = `<span class="ng">NG</span> マスタ取得に失敗（フォールバックで動作）`;
+      return false;
+    }
+  }
+
+  // 状態管理
+  const state = {
+    lineUserId: null,
+    groups: []
+  };
+
+  function renderGroup(group){
+    const wrapper = document.createElement("div");
+    wrapper.className = "card";
+    wrapper.dataset.groupId = group.localId;
+
+    wrapper.innerHTML = `
+      <div class="row">
+        <div>
+          <label>作業（work_code）</label>
+          <select class="workSelect">${workOptionsHTML(group.work_code)}</select>
+        </div>
+        <div>
+          <label>車種（そのまま保存）</label>
+          <input class="carType" placeholder="例：プリウス" value="${escapeHtmlAttr(group.car_type_text || "")}">
+        </div>
+      </div>
+
+      <label>ID一覧（1行=1ID / 10桁）</label>
+      <textarea class="idText" placeholder="0123456789&#10;0000000001"></textarea>
+
+      <div class="muted small status"></div>
+
+      <div class="actions">
+        <button class="btn danger removeBtn" type="button">このグループを削除</button>
+      </div>
+    `;
+
+    const idText = wrapper.querySelector(".idText");
+    idText.value = group.id_text || "";
+
+    // events
+    wrapper.querySelector(".workSelect").addEventListener("change", (e)=>{
+      group.work_code = e.target.value;
+      updateAll();
+    });
+    wrapper.querySelector(".carType").addEventListener("input", (e)=>{
+      group.car_type_text = e.target.value;
+      updateAll();
+    });
+
+    // 貼り付け/入力を運用向けに整形（カンマ→改行、CRLF→LF など）
+    idText.addEventListener("input", (e)=>{
+      const v = String(e.target.value ?? "")
+        .replace(/\r\n/g, "\n")
+        .replace(/[、,;]/g, "\n");
+      group.id_text = v;
+      if (v !== e.target.value) e.target.value = v;
+      updateAll();
+    });
+
+    wrapper.querySelector(".removeBtn").addEventListener("click", ()=>{
+      state.groups = state.groups.filter(g => g.localId !== group.localId);
+      updateUI();
+    });
+
+    return wrapper;
+  }
+
+  function updateUI(){
+    const groupsEl = el("groups");
+    groupsEl.innerHTML = "";
+    state.groups.forEach(g => groupsEl.appendChild(renderGroup(g)));
+    el("groupCount").textContent = String(state.groups.length);
+    updateAll();
+  }
+
+  function addGroup(){
+    const defaultWork = (WORKS[0]?.code) || "";
+    state.groups.push({
+      localId: uuid(),
+      work_code: defaultWork,
+      car_type_text: "",
+      id_text: ""
+    });
+    updateUI();
+  }
+
+  function updateAll(){
+    let totalQty = 0;
+    let totalInvalid = 0;
+    let allOk = true;
+
+    document.querySelectorAll("#groups .card").forEach(card=>{
+      const gid = card.dataset.groupId;
+      const g = state.groups.find(x => x.localId === gid);
+      const statusEl = card.querySelector(".status");
+
+      const workOk = !!(g.work_code || "").trim();
+      const carOk  = ((g.car_type_text || "").trim().length > 0);
+
+      const { ids, invalid } = parseIds(g.id_text || "");
+      totalQty += ids.length;
+      totalInvalid += invalid.length;
+
+      const ok = workOk && carOk && ids.length > 0 && invalid.length === 0;
+      if(!ok) allOk = false;
+
+      const msg = [];
+      msg.push(`ID有効: ${ids.length}件`);
+      if(!carOk) msg.push("車種未入力");
+      if(ids.length===0) msg.push("ID未入力");
+
+      if(invalid.length>0){
+        const list = invalid.slice(0,5).map(x => `行${x.lineNo}=${x.value}`).join(", ");
+        msg.push(`不正: ${invalid.length}件（${list}${invalid.length>5?"…":""}）`);
+      }
+
+      statusEl.innerHTML = ok
+        ? `<span class="ok">OK</span> ${msg.join(" / ")}`
+        : `<span class="ng">NG</span> ${msg.join(" / ")}`;
+    });
+
+    el("summary").textContent = `グループ数: ${state.groups.length} / 合計ID: ${totalQty} / 不正行: ${totalInvalid}`;
+    el("submitBtn").disabled = !(state.groups.length>0 && allOk && !isSubmitting);
+  }
+
+  function buildPayload(){
+    const work_date = el("workDate").value;
+    const store_id  = el("storeSelect").value;
+
+    const store_name_sna = knowingStoreName(store_id);
+    const reporter_line_user_id = state.lineUserId || "UNKNOWN";
+
+    const groups = state.groups.map(g=>{
+      const { ids } = parseIds(g.id_text || "");
+      return {
+        work_code: g.work_code,
+        work_name_sna: getWorkName(g.work_code),
+        car_type_text: (g.car_type_text || "").trim(),
+        ids
+      };
+    });
+
+    return { work_date, store_id, store_name_sna, reporter_line_user_id, groups };
+  }
+
+  function knowingStoreName(store_id){
+    const s = (STORES || []). assures?? false; // no-op placeholder to avoid accidental edits
+    const hit = (STORES || []).find(x => x.id === store_id);
+    return hit ? hit.name : "";
+  }
+
+  let isSubmitting = false;
+
+  async function submit(){
+    if (isSubmitting) return;
+    isSubmitting = true;
+    el("submitBtn").disabled = true;
+    el("result").textContent = "送信中…";
+
+    try{
+      const payload = buildPayload();
+
+      const headers = { "Content-Type": "application/json; charset=utf-8" };
+      if (API_KEY) headers["X-API-KEY"] = API_KEY;
+
+      const res = await fetch(MAKE_WEBHOOK_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      const text = await res.text();
+
+      if(res.ok){
+        el("result").textContent = "✅ 送信完了";
+
+        // 成功時：グループだけクリア（店舗/日付は残す）
+        state.groups = [];
+        addGroup();
+
+        // 任意：LINEトークに通知（LIFF内でのみ）
+        if (window.liff && liff.isInClient()){
+          try{
+            await liff.sendMessages([{
+              type: "text",
+              text: `✅ 作業報告送信完了\n日付:${payload.work_date}\n店舗:${payload.store_id}\nグループ:${payload.groups.length}`
+            }]);
+          } catch(_){ /* 送信失敗しても処理は続行 */ }
+        }
+      } else {
+        el("result").textContent = `❌ 送信失敗 HTTP ${res.status}\n${text}`;
+      }
+    } catch(e){
+      el("result").textContent = `❌ 送信失敗: ${e.message || e}`;
+    } finally {
+      isSubmitting = false;
+      updateAll();
+    }
+  }
+
+  async function init(){
+    el("result").textContent = "";
+
+    // 1) マスタ取得（失敗してもフォールバックで続行）
+    await loadMasters();
+    initStoreSelect();
+
+    // 2) デフォルト日付
+    el("workDate").value = todayISO();
+
+    // 3) 初期グループ1つ
+    addGroup();
+
+    // 4) LIFF初期化（直開き時は失敗しても動作させる）
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if(!liff.isLoggedIn()){
+        liff.login();
+        return;
+      }
+      const profile = await liff.getProfile();
+      state.lineUserId = profile.userId;
+      el("userInfo").textContent = `LINE userId: ${profile.userId}`;
+    } catch(e){
+      el("userInfo").textContent = `LIFF未初期化（ブラウザ直開きの可能性）: ${e.message || e}`;
+    }
+
+    el("addGroupBtn").addEventListener("click", addGroup);
+    el("submitBtn").addEventListener("click", submit);
+    el("closeBtn").addEventListener("click", ()=>{
+      if (window.liff && liff.isInClient()) liff.closeWindow();
+      else window.close();
+    });
+
+    // 店舗変更で summary 反映（payloadに store_name_sna を含めるため）
+    el("storeSelect").addEventListener("change", updateAll);
+
+    updateAll();
+  }
+
+  init();
+</script>
+</body>
+</html>
