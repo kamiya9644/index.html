@@ -238,30 +238,48 @@
     return null;
   }
 
-  async function loadMasters(){
-    el("masterInfo").textContent = "マスタ読み込み中…";
-    try{
-      const headers = {};
-      if (API_KEY) headers["X-API-KEY"] = API_KEY;
+ async function loadMasters(){
+  el("masterInfo").textContent = "マスタ読み込み中…";
+  try{
+    const headers = {};
+    if (API_KEY) headers["X-API-KEY"] = API_KEY;
 
-      const res = await fetch(MASTER_API_URL, { method: "GET", headers });
-      if(!res.ok) throw new Error(`master api http ${res.status}`);
-      const data = await res.json();
+    const res = await fetch(MASTER_API_URL, { method: "GET", headers });
+    if(!res.ok) throw new Error(`master api http ${res.status}`);
+    const data = await res.json();
 
-      const stores = normalizeStores(data.stores);
-      const works  = normalizeWorks(data.works);
-
-      if (stores && stores.length) STORES = stores;
-      if (works  && works.length)  WORKS  = works;
-
-      el("masterInfo").innerHTML = `<span class="ok">OK</span> マスタ取得: 店舗 ${STORES.length}件 / 作業 ${WORKS.length}件`;
-      return true;
-    } catch(e){
-      console.warn("loadMasters failed:", e);
-      el("masterInfo").innerHTML = `<span class="ng">NG</span> マスタ取得に失敗（フォールバックで動作）`;
-      return false;
+    // stores: [{ "0": store_id, "1": store_name }, ...]
+    if (Array.isArray(data.stores)) {
+      const s = data.stores
+        .filter(r => r && (r["0"] ?? r[0]) && (r["1"] ?? r[1]))
+        .map(r => ({
+          id: String(r["0"] ?? r[0]),
+          name: String(r["1"] ?? r[1]),
+        }));
+      if (s.length) STORES = s;
     }
+
+    // works: [{ "0": work_code, "1": work_name, "2": unit_price }, ...]
+    if (Array.isArray(data.works)) {
+      const w = data.works
+        .filter(r => r && (r["0"] ?? r[0]) && (r["1"] ?? r[1]))
+        .map(r => ({
+          code: String(r["0"] ?? r[0]),
+          name: String(r["1"] ?? r[1]),
+          default_unit_price: (r["2"] ?? r[2]) === "" || (r["2"] ?? r[2]) == null ? null : Number(r["2"] ?? r[2])
+        }));
+      if (w.length) WORKS = w;
+    }
+
+    el("masterInfo").innerHTML = `<span class="ok">OK</span> マスタ取得: 店舗 ${STORES.length}件 / 作業 ${WORKS.length}件`;
+    return true;
+  } catch(e){
+    console.warn("loadMasters failed:", e);
+    el("masterInfo").innerHTML = `<span class="ng">NG</span> マスタ取得に失敗（フォールバックで動作）`;
+    return false;
   }
+}
+
 
   // 状態管理
   const state = {
