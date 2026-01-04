@@ -121,6 +121,11 @@
     return hit ? hit.name : "";
   }
 
+  // ★「その他」判定（work_code が other のときだけ）
+  function isOtherWork(work_code){
+    return String(work_code || "").trim().toLowerCase() === "other";
+  }
+
   function initStoreSelect(){
     const storeSel = el("storeSelect");
     const prev = storeSel.value;
@@ -246,7 +251,10 @@
       const headers = {};
       if (API_KEY) headers["X-API-KEY"] = API_KEY;
 
-      const res = await fetch(MASTER_API_URL, { method: "GET", headers });
+      // ★キャッシュ回避（追加した作業が反映されない事故防止）
+      const url = MASTER_API_URL + (MASTER_API_URL.includes("?") ? "&" : "?") + "ts=" + Date.now();
+      const res = await fetch(url, { method: "GET", headers });
+
       if(!res.ok) throw new Error(`master api http ${res.status}`);
       const data = await res.json();
 
@@ -283,6 +291,11 @@
         </div>
       </div>
 
+      <div class="workNoteWrap" style="display:none;">
+        <label>その他の内容（price_note）</label>
+        <input class="workNote" placeholder="例：特別対応の内容など" value="${escapeHtmlAttr(group.price_note_text || "")}">
+      </div>
+
       <label>ID一覧（1行=1ID / 10桁）</label>
       <textarea class="idText" placeholder="0123456789&#10;0000000001"></textarea>
 
@@ -296,13 +309,35 @@
     const idText = wrapper.querySelector(".idText");
     idText.value = group.id_text || "";
 
-    wrapper.querySelector(".workSelect").addEventListener("change", (e)=>{
+    const workSel   = wrapper.querySelector(".workSelect");
+    const noteWrap  = wrapper.querySelector(".workNoteWrap");
+    const noteInput = wrapper.querySelector(".workNote");
+
+    function toggleOtherUI(){
+      const show = isOtherWork(group.work_code);
+      noteWrap.style.display = show ? "block" : "none";
+      if(!show){
+        group.price_note_text = "";
+        noteInput.value = "";
+      }
+    }
+
+    // 初期表示
+    toggleOtherUI();
+
+    workSel.addEventListener("change", (e)=>{
       group.work_code = e.target.value;
+      toggleOtherUI();
       updateAll();
     });
 
     wrapper.querySelector(".carType").addEventListener("input", (e)=>{
       group.car_type_text = e.target.value;
+      updateAll();
+    });
+
+    noteInput.addEventListener("input", (e)=>{
+      group.price_note_text = e.target.value;
       updateAll();
     });
 
@@ -337,7 +372,8 @@
       localId: uuid(),
       work_code: defaultWork,
       car_type_text: "",
-      id_text: ""
+      id_text: "",
+      price_note_text: "" // ★追加
     });
     updateUI();
   }
@@ -366,6 +402,11 @@
       msg.push(`ID有効: ${ids.length}件`);
       if(!carOk) msg.push("車種未入力");
       if(ids.length===0) msg.push("ID未入力");
+
+      // ※必須化はしていません（必要ならここで制御できます）
+      if(isOtherWork(g.work_code) && ((g.price_note_text || "").trim().length === 0)){
+        msg.push("その他内容未入力（任意）");
+      }
 
       if(invalid.length>0){
         const list = invalid.slice(0,5).map(x => `行${x.lineNo}=${x.value}`).join(", ");
@@ -396,7 +437,9 @@
           work_code: g.work_code,
           work_name_sna: getWorkName(g.work_code),
           car_type_text: (g.car_type_text || "").trim(),
-          ids
+          ids,
+          // ★Makeで GroupsシートのR列 price_note にマッピングする
+          price_note: isOtherWork(g.work_code) ? (g.price_note_text || "").trim() : ""
         };
       })
     };
